@@ -1,3 +1,4 @@
+'''All mode'''
 #架設 server
 import os
 import re
@@ -17,32 +18,21 @@ import speech_recognition as sr
 from langchain.tools import YouTubeSearchTool
 from flask import Flask, request, send_file, abort
 
-load_dotenv()
-env_key = "OPENAI_API_KEY"
-if env_key in os.environ and os.environ[env_key]:
-    openai.api_key = os.environ[env_key]
-
-TDX_ID='meebox-cc6ed12e-5254-47e3'
-TDX_SECRET='b5bfb7cc-4b43-4f4f-97f8-faaf7705df9b'
-tdx_client = TDX(TDX_ID,TDX_SECRET)
-
-api_base_url1 = ('https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/') # 台鐵
-api_base_url2 = ('https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/') # 高鐵
-headers = {'user-agent':'Mozilla/5.0'}
-
-def station_info():
-    res = requests.get(f"{api_base_url1}Station?$select=stationName,stationID", headers=headers, )
-    json_data = res.json()
-    stations = {}
-    for station in json_data['Stations']:
-        station_name = station['StationName']['Zh_tw']
-        station_id = station['StationID']
-        stations[station_name] = station_id
-    # print(stations)
-    return stations
-
-def high_station_info():
-    json_data = tdx_client.get_json(f"{api_base_url2}Station?$select=stationName,stationID")
+api_base_url1 = 'https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/' # 台鐵
+api_base_url2 = 'https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/' # 高鐵
+def station_info(trains):
+    """
+    取得台鐵或高鐵的所有停靠站
+    Args:
+        trains:1(台鐵) or 2(高鐵)
+    Returns:
+        stations
+    """
+    if trains == 1 :
+        json_data = tdx_client.get_json(f"{api_base_url1}Station?$select=stationName,stationID")
+        json_data = json_data['Stations']
+    else:
+        json_data = tdx_client.get_json(f"{api_base_url2}Station?$select=stationName,stationID")
     stations = {}
     for station in json_data:
         station_name = station['StationName']['Zh_tw']
@@ -167,8 +157,8 @@ def youtube_to_wav(url):
     audio = audio.set_channels(2)
     audio = audio.set_sample_width(2)
     audio.export(file_name_wav, format="wav")
-    # change_sound = add_wav_volume(file_name_wav, -20)
-    # change_sound.export(file_name_wav, format="wav")  # WAV 存檔
+    change_sound = add_wav_volume(file_name_wav, -20)
+    change_sound.export(file_name_wav, format="wav")  # WAV 存檔
     print('ok')
     return 'ok'
 
@@ -226,19 +216,32 @@ def convert_wav_to_text(wav_file):
 
 # ==============text_to_speech===============
 def text_to_speech(text, lang): # 文本 語言-語系
+    """
+    Args:
+        text: 傳入的文字
+        lang: 語言-語系 e.g. "zh-TW"
+    Returns: output_file--wav檔案路徑,測試時方便觀察
+    """
     tts = gTTS(text, lang=lang)  # 建立 gTTS
     # 將語音儲存為 mp3 檔案
     file_path = f'{path}/temp.mp3'  # mp3檔案路徑
     tts.save(file_path) # 儲存音檔
     output_file = f'{path}/uploads/temp.wav' # wav檔案路徑
     convert_to_wav(file_path, output_file,"mp3") # mp3 to wav
-    # change_sound = add_wav_volume(output_file, -20)
-    # change_sound.export(output_file, format="wav")  # WAV 存檔
+    change_sound = add_wav_volume(output_file, -20)
+    change_sound.export(output_file, format="wav")  # WAV 存檔
     delete_file(file_path) # 刪除mp3
     return output_file
 
 def chatgpt(system=None,messages=None,messages_dict=None):
-    if messages_dict == None:
+    """
+    Args:
+        system: 設定系統訊息
+        messages: user的訊息
+        messages_dict: 傳給chatgpt的dict
+    Returns: reply--chatgpt的回答
+    """
+    if messages_dict == None: # 如果沒有傳入massages_dict，直接把system與message放入
         messages_dict = [{'role': 'system', 'content': system,
                           'role': 'user', 'content': messages}]
     try:
@@ -251,6 +254,57 @@ def chatgpt(system=None,messages=None,messages_dict=None):
         reply = f"發生 {err.error.type} 錯誤\n{err.error.message}"
         return reply
 
+def catch_destination(high_stations,stations, result):
+    messages = station_name.format(high_stations, stations, result)  # 帶入樣板取得 車種、起點、終點
+    station_reply = chatgpt('', messages)
+    reply_json = json.loads(station_reply)
+    train = reply_json["train"]  # 台鐵或高鐵
+    start_station = reply_json["station1"]  # 起點站
+    end_station = reply_json["station2"]  # 終點站
+    return train,start_station,end_station
+
+def catch_train_number(start_station, end_station, result):
+    timetables1, timetables2 = high_stations_time(start_station, end_station)  # 取得時刻表(純時間)、時刻表(含車次)
+    messages = high_station_time.format(timetables1, result)  # 找出最接近的時間(樣板)
+    time_reply = chatgpt('', messages)
+    reply_json = json.loads(time_reply)
+    time1 = reply_json["time1"]
+    for i in timetables2:
+        if i['出發'] == time1:  # 找到相對應的出發時間
+            m_i = [i]  # 有對應到時間的車次
+            return m_i
+
+def save_chat(user, reply):
+    backtrace = 3
+    hist = load_hist(backtrace)
+    hist_len = backtrace * 2
+    while len(hist) >= hist_len:
+        hist.pop(1)
+        hist.pop(0)
+    hist += [user, reply]  # 紀錄對話
+    print(hist)
+    save_hist(hist)  # 儲存對話
+
+ # 音樂撥放器
+def player_machine(result):
+    music_reply = chatgpt('你是我的個人助理', get_music_name.format(result))
+    reply_json = json.loads(music_reply)
+    music_name = reply_json["music_name"]
+    if music_name == 'None':
+        music_reply  = '無法提取歌名'
+    else:
+        music_url = get_music_url(music_name)
+        text_to_speech(f'正在為您播放{music_name}', "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
+        try:
+            reply = f'youtube music {music_name}'
+            music_reply = f'正在為您播放{music_name}'
+            youtube_to_wav(music_url)
+        except Exception as e:
+            reply = music_reply = '播放失敗'
+            print(e)
+            text_to_speech(reply, "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
+        save_chat(result, reply)  # 儲存對話
+    return reply,music_reply
 
 translate_language = '''
 請取出以下敘述中出現的語言名稱並將其轉換成ISO 639-1的代號，
@@ -293,10 +347,7 @@ translate_something = '''
 '''
 
 translate_text = '''
-請幫我翻譯以下文句成{}
-```
-{}
-```
+請幫我翻譯以下文句成{}```{}```
 請以下列 JSON 格式回答我, 除了 JSON 格式資料外,
 不要加上額外資訊：
 ```
@@ -314,12 +365,9 @@ translate_text = '''
 '''
 
 function_choice = '''
-請將以下文句選擇符合的代號,不要加上額外資訊
-```
-{}
-```
+請將以下文句選擇符合的代號,不要加上額外資訊```{}```
 需要開燈:t1,白色:t1,紅色燈:t2綠色燈:t3藍色燈:t4,黃色燈:t5,紫色燈:t6,藍綠色燈:t7,
-循環燈:t8,彩色燈:t8,需要關燈:t9,音樂or歌曲or想聽:t10,翻譯:t11,火車:t12,其他:None
+循環燈:t8,彩色燈:t8,需要關燈:t9,需要播放音樂or想聽:t10,翻譯:t11,高鐵或台鐵(火車):t12,其他:None
 請以下列 JSON 格式回答我, 除了 JSON 格式資料外,
 不要加上額外資訊：
 ```
@@ -335,12 +383,8 @@ function_choice = '''
 '''
 
 get_music_name = '''
-請將以下文句中的歌曲名稱篩選出來,不要加上額外資訊
-```
-{}
-```
-請以下列 JSON 格式回答我, 除了 JSON 格式資料外,
-不要加上額外資訊：
+請將以下文句中的歌曲名稱篩選出來,不要加上額外資訊```{}```
+請以下列 JSON 格式回答我, 除了 JSON 格式資料外,不要加上額外資訊：
 ```
 {{
     "music_name":"歌曲名稱"
@@ -414,6 +458,16 @@ template_google = '''
 '''
 
 
+# =========================主程式=====================================================
+load_dotenv()
+env_key = "OPENAI_API_KEY"
+if env_key in os.environ and os.environ[env_key]:
+    openai.api_key = os.environ[env_key]
+
+TDX_ID='meebox-cc6ed12e-5254-47e3'
+TDX_SECRET='b5bfb7cc-4b43-4f4f-97f8-faaf7705df9b'
+tdx_client = TDX(TDX_ID,TDX_SECRET) # 讀取 api ID 與 密碼
+
 # 取得主程式的目錄路徑
 path = str(os.path.dirname(os.path.abspath(__file__)))
 # 檢查是否存在 uploads 資料夾
@@ -426,9 +480,19 @@ if not os.path.exists(uploads_directory):
 else:
     pass
 
-light_list = {'t1':'白色燈','t2':'紅色燈','t3':'綠色燈','t4':'藍色燈','t5':'黃色燈','t6':'紫色燈','t7':'藍綠色燈','t8':'循環燈','t9':'關燈'}
-
+# 設定 led 代號
+light_list = {'t1':'白色燈',
+              't2':'紅色燈',
+              't3':'綠色燈',
+              't4':'藍色燈',
+              't5':'黃色燈',
+              't6':'紫色燈',
+              't7':'藍綠色燈',
+              't8':'循環燈',
+              't9':'關燈'}
+# 加入youtube下載套件
 tool = YouTubeSearchTool()
+
 app = Flask(__name__) # 建立 app
 
 UPLOAD_FOLDER = path+'/uploads'  # 上傳資料的資料夾
@@ -439,83 +503,52 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 def hello():
     return "Welcome to the audio server!"
 
- # 上傳文字目錄
-@app.route('/upload_string', methods=['POST'])
-def upload_string():
-    try:
-        # 接收從MicroPython設備發送的字串
-        uploaded_data = request.data.decode('utf-8')
-        data,lang = uploaded_data.split('$') # 字串中間有用$分隔，文本$語言
-        print(data,lang)
-        text_to_speech(data, lang) # 文字轉語音檔 /uploads/temp.wav
-        return '接收成功'
-    except Exception as e:
-        print(uploaded_data)
-        return '接收失敗: ' + str(e)
-
 # 上傳PCM音檔
 @app.route('/upload_audio', methods=['POST'])
 def upload_audio():
     audio_data = request.data
-    # 接收到的數據大小
-    data_size = len(audio_data)
-    #print(f'Received {data_size} bytes')
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'input.pcm')
     with open(file_path, 'ab') as audio_file:
         audio_file.write(audio_data)
     return '上傳成功'
 
-
-# 處理音訊並與chatgpt溝通
+# 與 chatgpt 溝通
 @app.route('/fix_audio', methods=['GET'])
 def fix_audio():
-    # try:
+    # =======================處理錄音檔並轉成文字=============================================
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'input.pcm')
     wav_file = 'uploads/output.wav'
     pcm2wav(file_path, wav_file, channels=1, bits=16, sample_rate=8000) # PCM TO wav
-    delete_file(file_path) # 刪除 PCM
-
+    delete_file(file_path) # 刪除 PCM 檔
     change_sound = add_wav_volume(wav_file, db=30) # 增加音量
-    delete_file(wav_file)  # 刪除原始 WAV
+    delete_file(wav_file)  # 刪除原始 WAV 檔
     wav_file2 = "uploads/out.wav"
     change_sound.export(wav_file2, format="wav")  # WAV 存檔
     result = convert_wav_to_text(wav_file2) # 語音轉文字
-    delete_file(wav_file2)  # 刪除音量增大 WAV
+    delete_file(wav_file2)  # 刪除音量增大 WAV 檔
+    # ================================================================================
     # result = input('user: ')
-    result = '龍井到大肚早上十點的火車'
+    # result = '剛才誰開了燈'
+    # ======================判斷是否成功識別語音=========================================
     if result == '無法識別語音':
-        print(result)
-        result
-        delete_file(f'{path}/uploads/temp.wav')
+        print(f"Chatgpt：{result}")
+        delete_file(f"{path}/uploads/temp.wav") # 刪除殘留語音檔 temp
         text_to_speech(result, "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
-        return f'${result}$'
+        return f"${result}$"
     else:
         print(f"USER：{result}")
         # AI判別是否啟用功能或一般對話
         reply = chatgpt('你是一個智能助手',function_choice.format(result))
         reply_json = json.loads(reply)
-        reply = reply_json["function_code"]
-        # print(reply)
-        for i in range(12, 0,-1):
-            if f't{i}' in reply:
-                reply = f't{i}'
+        reply = reply_json["function_code"] # reply 會輸出 t1~t12 or None
+
+        for i in range(12, 0,-1): # 從最後一筆開始是因為 t1 也包含在 t10、t11、t10,所以要從t12開始判斷
+            if f't{i}' in reply: # 判斷是否要處理特定任務
+                reply = f't{i}' # 讓 reply 設成代號
                 # ==================================音樂撥放器======================================================
                 if 't10' == reply:
-                    music_reply = chatgpt('你是我的個人助理',get_music_name.format(result))
-                    reply_json = json.loads(music_reply)
-                    music_name = reply_json["music_name"]
-                    if music_name == 'None':
-                        music_name = '無法提取歌名'
-                    else:
-                        music_url = get_music_url(music_name)
-                        text_to_speech(f'正在為您播放{music_name}', "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
-                        try:
-                            youtube_to_wav(music_url)
-                        except Exception as e:
-                            reply='播放失敗'
-                            print(e)
-                            text_to_speech(reply, "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
-                        return f'{result}${reply}$正在為您播放{music_name}'
+                    reply, music_reply = player_machine(result) # 取得要播放的歌名 music_reply，並下載音檔
+                    return f'{result}${reply}${music_reply}'
                 # ========================================翻譯機======================================================
                 elif 't11' == reply:
                     # 先確認要翻譯成什麼語言
@@ -523,13 +556,11 @@ def fix_audio():
                     reply_json = json.loads(language_reply)
                     language_name = reply_json["name"]
                     language = reply_json["language"]
-                    # 取出此語言的名稱後，將它從文具中剃除(可以請AI做一次篩除)
-                    # result = result.replace(language_name, '')
-
+                    # 取出需要被翻譯的文句
                     something_reply = chatgpt('你是一個專業的翻譯員',translate_something.format(result))
                     reply_json = json.loads(something_reply)
                     something = reply_json["something"]
-
+                    # 開始翻譯
                     anser_reply = chatgpt('你是一個專業的翻譯員，請將以下翻成{language_name}',
                                           translate_text.format(language_name, something))
                     reply_json = json.loads(anser_reply)
@@ -537,56 +568,45 @@ def fix_audio():
                     print(f"Chatgpt：{reply}")
                     try:
                         text_to_speech(reply, language)  # 文字轉語音檔 /uploads/temp.wav
+                        save_chat(result, reply)  # 儲存對話
                     except:reply='翻譯錯誤'
                     return f'{result}${reply}$'
                 # ========================================高鐵/台鐵時刻查詢======================================================
                 elif 't12' == reply:
-                    stations = station_info()
-                    high_stations = high_station_info()
-                    messages = station_name.format(high_stations, stations, result)
-                    station_reply = chatgpt('', messages)
-                    reply_json = json.loads(station_reply)
-                    train = reply_json["train"]
-                    start_station = reply_json["station1"]
-                    end_station = reply_json["station2"]
+                    stations = station_info(1) # 取得台鐵站名代號
+                    high_stations = station_info(0) # 取得高鐵站名代號
                     # ========================================判斷高鐵或台鐵======================================================
-                    if train == '高鐵':
-                        timetables1, timetables2 = high_stations_time(start_station, end_station)
-                        messages = high_station_time.format(timetables1, result)
-                        time_reply = chatgpt('', messages)
-                        reply_json = json.loads(time_reply)
-                        time1 = reply_json["time1"]
-                        m_i = []
-                        for i in timetables2:
-                            if i['出發'] == time1:
-                                m_i += [i]
+                    # 取得車種,起點,終點
+                    train, start_station, end_station = catch_destination(high_stations, stations, result)
 
-                        messages = f'{str(m_i)}根據此資料請簡述回答以下問題:{result}'
-                        reply = chatgpt('你是我的個人助理，並且只能用繁體中文回答', messages)
-                        print(f"Chatgpt：{reply}")
-                        text_to_speech(reply, "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
-                        return f'{result}${reply}$'
-                    else: # 台鐵
-                        timetables = stations_time(start_station, end_station)
-                        messages = f'{timetables}請詳細回答: {result}'
-                        reply = chatgpt('你是我的個人助理，並且只用繁體中文回答', messages)
-                        print(f"Chatgpt：{reply}")
-                        text_to_speech(reply, "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
-                        return f'{result}${reply}$'
+                    if train == '高鐵':
+                        train_number = catch_train_number(start_station, end_station, result) # 取得最相關的車次與時間
+                        messages = f'{str(train_number)}請根據此資料簡述回答以下問題:{result}'
+
+                    elif train == '台鐵':
+                        timetables = stations_time(start_station, end_station) # 取得台鐵時刻表
+                        messages = f'{timetables}請選擇最接近的出發時間並詳細回答: {result}'
+                    else: # None
+                        break
+                    reply = chatgpt('你是我的個人助理，並且只能用繁體中文回答', messages)
+                    print(f"Chatgpt：{reply}")
+                    text_to_speech(reply, "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
+                    save_chat(result, reply) # 儲存對話
+                    return f'{result}${reply}$'
                 # ========================================控制led燈======================================================
                 else:
                     light = light_list[reply]
 
-                    if reply == 't9': reply_light = f'已為您{light}'
-                    elif reply == 't8':reply_light = f'開啟{light}'
-                    else:reply_light = f'已為您開啟{light}'
-                    text_to_speech(reply_light, 'zh-tw')  # 文字轉語音檔 /uploads/temp.wav
+                    if reply == 't9': reply_light = f'已為您{light}' # 關燈
+                    elif reply == 't8':reply_light = f'開啟{light}' # 循環燈 (因為是迴圈所以要先發聲再開燈)
+                    else:reply_light = f'已為您開啟{light}' # 一般燈(先開燈再發聲)
                     print(f"Chatgpt：{reply_light}")
+                    text_to_speech(reply_light, 'zh-tw')  # 文字轉語音檔 /uploads/temp.wav
+                    save_chat(result, f'已為您開啟{light}')  # 儲存對話
                     return f'{result}${reply}${reply_light}'
                 break
         # ========================================聊天模式======================================================
         else :
-
             backtrace = 3
             hist = load_hist(backtrace)
             hist_len = backtrace * 2
@@ -600,12 +620,11 @@ def fix_audio():
             # ------------------------------------------------------------------------
             message1 = message.copy()
             message1.append({'role': 'user', 'content': template_google.format(result)}) # 餵給googlesearch樣板
-
             go_reply = chatgpt(None,None,message1)
             reply_json = json.loads(go_reply)
             search_Y_N = reply_json["search"]
             keyword = reply_json["keyword"]
-            print(keyword)
+            print('搜尋關鍵字:',keyword)
             if search_Y_N == 'Y':
                 content = "最新資訊：\n"
                 i_c = 1
@@ -614,25 +633,23 @@ def fix_audio():
                     content += f"摘要：{item.description}\n\n"
                 content += "只需單純用繁體中文回答以下問題，如果遇到科學單位請以台灣常用的為準(°C、kg、m/s等等)，不要加上額外資訊：\n"
                 result_2 = content + result
-            else:# 中和天氣如何
+            else:
                 result_2 = result
             message.append({'role': 'user', 'content': result_2})  # 最後加上本次使用者訊息
-            print(message)
+
             reply = chatgpt(None,None,message)  # chatgpt
             user = result
             while len(hist) >= hist_len:
                 hist.pop(1)
                 hist.pop(0)
             hist += [user, reply]  # 紀錄對話
+            print(hist)
             save_hist(hist)  # 儲存對話
             text_to_speech(reply, "zh-tw")  # 文字轉語音檔 /uploads/temp.wav
         print(f"Chatgpt：{reply}")
         return f'{result}${reply}$'
     # except Exception as e:
     #     return 'Error : ' + str(e)
-
-
-
 
 # 下載音檔的路徑
 @app.route('/download/<filename>', methods=['GET'])
